@@ -133,6 +133,30 @@ def checkout(
 
 
 @index_app.command()
+def custom_directory(
+    path: str,
+):
+    file_id_path_mapping, excluded_files = index_to_astra_assistants(path)
+    write_file(f"{path}/file_ids.json", json.dumps(file_id_path_mapping, indent=2))
+    write_file(
+        f"{path}/excluded_files.json", json.dumps(excluded_files, indent=2)
+    )
+    assistant_id = ""
+    if os.path.exists(f"{path}/assistant_id.txt"):
+        with open(f"{path}/assistant_id.txt", "r") as file:
+            print(f"trying to load file {file} from {path}/assistant_id.txt")
+            assistant_id = file.read()
+    else:
+        file_ids = list(file_id_path_mapping.keys())
+
+        id = os.path.basename(path.rstrip('/'))
+        assistant = create_assistant(file_ids, id)
+        write_file(f"{path}/assistant_id.txt", assistant.id)
+        assistant_id = assistant.id
+
+
+
+@index_app.command()
 def astra_assistants(
     split: str = "dev",
     dataset_name="princeton-nlp/SWE-bench",

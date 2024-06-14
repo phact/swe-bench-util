@@ -5,7 +5,7 @@ import threading
 from functools import partial
 
 from tqdm import tqdm
-from streaming_assistants import patch
+from astra_assistants import patch
 from openai import OpenAI
 from openai.lib.streaming import AssistantEventHandler
 from typing_extensions import override
@@ -14,6 +14,7 @@ from swe_bench_util.index.file_util import EXCLUDE_EXTS, exponential_backoff_ret
 OPENAI_CLIENT = None
 
 open_ai_client_lock = threading.Lock()
+
 
 
 def open_ai_client():
@@ -50,6 +51,7 @@ def upload_file(file_path) -> str | None:
 file_ids_lock = threading.Lock()
 excluded_files_lock = threading.Lock()
 
+
 def index_to_astra_assistants(repo_dir):
     """
     Indexes files in the repository directory, uploads them, and returns their IDs.
@@ -62,7 +64,7 @@ def index_to_astra_assistants(repo_dir):
     ]
     total_files = len(file_paths)
 
-    print("going to upload {total_files} files")
+    print(f"going to upload {total_files} files")
     # Initialize the progress bar
     pbar = tqdm(total=total_files, desc="Uploading files")
 
@@ -70,12 +72,12 @@ def index_to_astra_assistants(repo_dir):
     excluded_files = []
 
     # Define a wrapper function to use with each file upload
-    def upload_and_progress(file_path, repo_dir):
+    def upload_and_progress(file_path, directory):
         try:
             file_id = exponential_backoff_retry(upload_file, file_path)
             if file_id is not None:
                 with file_ids_lock:  # Ensure thread-safe append operation
-                    file_ids[file_id] = file_path[len(repo_dir)+1:]
+                    file_ids[file_id] = file_path[len(directory) + 1:]
             else:
                 with excluded_files_lock:  # Ensure thread-safe append operation
                     excluded_files.append(file_path)
@@ -83,7 +85,7 @@ def index_to_astra_assistants(repo_dir):
             # Update the progress bar in a thread-safe manner
             pbar.update(1)
 
-    upload_with_repo = partial(upload_and_progress, repo_dir=repo_dir)
+    upload_with_repo = partial(upload_and_progress, directory=repo_dir)
     # Use ThreadPoolExecutor to upload files in parallel
     with concurrent.futures.ThreadPoolExecutor() as executor:
         # Map each file upload task to the executor
@@ -96,20 +98,11 @@ def index_to_astra_assistants(repo_dir):
     return file_ids, excluded_files
 
 
-system_prompt = """
-    You are a developer, you will be provided with a partial code base and a github issue description explaining a programming problem to resolve.
-    Solve the issue by generating a single patch file that can be applied directly to this repository using git apply. Please respond with a single patch file in the following format (no yapping).
-    <patch>
-    --- a/file.py
-    +++ b/file.py
-    @@ -1,27 +1,35 @@
-    def euclidean(a, b):
-    -    while b:
-    -        a, b = b, a % b
-    -    return a
-    +    if b == 0:
-    +        return a
-    +    return euclidean(b, a % b)
+system_prompt = """You are a developer, you will be provided with a partial code base and a github issue description 
+explaining a programming problem to resolve. Solve the issue by generating a single patch file that can be applied 
+directly to this repository using git apply. Please respond with a single patch file in the following format (no 
+yapping). <patch> --- a/file.py +++ b/file.py @@ -1,27 +1,35 @@ def euclidean(a, b): -    while b: -        a, b = b, 
+a % b -    return a +    if b == 0: +        return a +    return euclidean(b, a % b)
 
 
     def bresenham(x0, y0, x1, y1):
@@ -157,19 +150,21 @@ system_prompt = """
     </patch>
     """
 
-def create_assistant(file_ids, id):
+
+def create_assistant(file_ids, instance_id):
     client = open_ai_client()
-    #assistant = client.beta.assistants.retrieve(id)
-    #if assistant is not None:
+    # assistant = client.beta.assistants.retrieve(id)
+    # if assistant is not None:
     #    return assistant
-    #else:
+    # else:
     # create assistant
+    tool_resources={'file_search': {'vector_stores': [{'file_ids': file_ids}]}}
     assistant = client.beta.assistants.create(
-        file_ids=file_ids,
         model="gpt-4-0125-preview",
         instructions=system_prompt,
-        name=id,
-        tools=[{"type": "retrieval"}],
+        name=instance_id,
+        tools=[{"type": "file_search"}],
+        tool_resources=tool_resources,
     )
     return assistant
 
@@ -211,9 +206,9 @@ def get_retrieval_file_ids(assistant_id, row_data):
     handler = EventHandler()
     print("creating run")
     with open_ai_client().beta.threads.runs.create_and_stream(
-        thread_id=thread.id,
-        assistant_id=assistant_id,
-        event_handler=handler,
+            thread_id=thread.id,
+            assistant_id=assistant_id,
+            event_handler=handler,
     ) as stream:
         # stream.until_done()
         print("producing diff:")
